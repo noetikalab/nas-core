@@ -1,0 +1,53 @@
+services:
+  # 容器1：OpenLDAP，负责存储所有用户信息（用户名、密码hash、UID）
+  openldap:
+    image: osixia/openldap:1.5.0
+    environment:
+      LDAP_ORGANISATION: "NAS"
+      LDAP_DOMAIN: "nas.local"
+      LDAP_ADMIN_PASSWORD: "admin123"
+      LDAP_EXTRA_SCHEMAS: "samba"
+    volumes:
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+    ports:
+      - "389:389"
+
+  # 容器2：一次性初始化容器，等 openldap 就绪后导入 init.ldif，完成后自动退出
+  ldap-init:
+    image: osixia/openldap:1.5.0
+    depends_on:
+      - openldap
+    volumes:
+      - ./ldap/init.ldif:/tmp/init.ldif
+    entrypoint:
+      - /bin/sh
+      - -c
+      - "until ldapsearch -x -H ldap://openldap -D cn=admin,dc=nas,dc=local -w admin123 -b dc=nas,dc=local > /dev/null 2>&1; do echo 'waiting for openldap...'; sleep 2; done; ldapadd -x -H ldap://openldap -D cn=admin,dc=nas,dc=local -w admin123 -f /tmp/init.ldif || true; echo 'ldap init done'"
+
+  # 容器3：NAS 主容器，Go 服务 + Samba + NFS 合并在一起
+  nas:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      - openldap
+    privileged: true
+    environment:
+      LDAP_URL: ldap://openldap:389
+      LDAP_ADMIN_DN: "cn=admin,dc=nas,dc=local"
+      LDAP_ADMIN_PW: "admin123"
+      LDAP_USERS_DN: "ou=users,dc=nas,dc=local"
+      DOMAIN_SID: "S-1-5-21-1234567890-1234567890-1234567890"
+      JWT_SECRET: "nas-demo-secret-key-32bytes-long!"
+    ports:
+      - "8080:8080"
+      - "445:445"
+      - "2049:2049"
+    volumes:
+      - nas-data:/data
+
+volumes:
+  ldap-data:
+  ldap-config:
+  nas-data:

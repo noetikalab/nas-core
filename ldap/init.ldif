@@ -1,0 +1,12 @@
+dn: ou=users,dc=nas,dc=local
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=nas,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+dn: cn=nas-users,ou=groups,dc=nas,dc=local
+objectClass: posixGroup
+cn: nas-users
+gidNumber: 1000

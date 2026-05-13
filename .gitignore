@@ -1,0 +1,17 @@
+# Go
+authd/vendor/
+*.exe
+
+# 环境变量
+.env
+.env.*
+
+# 日志
+logs/*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Docker 数据卷（本地挂载）
+data/
