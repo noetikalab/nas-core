@@ -1,0 +1,528 @@
+basePath: /
+definitions:
+  handler.ErrorResponse:
+    properties:
+      error:
+        example: error description
+        type: string
+    type: object
+  handler.ListFilesResponse:
+    properties:
+      files:
+        items:
+          $ref: '#/definitions/system.FileInfo'
+        type: array
+      path:
+        example: /data/alice
+        type: string
+    type: object
+  handler.LoginRequest:
+    properties:
+      password:
+        example: "12345678"
+        type: string
+      username:
+        example: alice
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  handler.LoginResponse:
+    properties:
+      token:
+        example: eyJhbGciOiJIUzI1NiIs...
+        type: string
+    type: object
+  handler.MkdirRequest:
+    properties:
+      path:
+        example: /data/alice/photos
+        type: string
+    required:
+    - path
+    type: object
+  handler.MoveFileRequest:
+    properties:
+      from:
+        example: /data/alice/old.txt
+        type: string
+      to:
+        example: /data/alice/new.txt
+        type: string
+    required:
+    - from
+    - to
+    type: object
+  handler.OKPathResponse:
+    properties:
+      ok:
+        example: true
+        type: boolean
+      path:
+        example: /data/alice/photos
+        type: string
+    type: object
+  handler.OKResponse:
+    properties:
+      ok:
+        example: true
+        type: boolean
+    type: object
+  handler.RegisterRequest:
+    properties:
+      password:
+        example: "12345678"
+        minLength: 8
+        type: string
+      username:
+        example: alice
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  handler.RegisterResponse:
+    properties:
+      token:
+        example: eyJhbGciOiJIUzI1NiIs...
+        type: string
+      uid:
+        example: 1001
+        type: integer
+    type: object
+  handler.SetPermissionRequest:
+    properties:
+      action:
+        example: readonly
+        type: string
+      path:
+        example: /data/alice
+        type: string
+      readonly:
+        type: boolean
+      target_user:
+        example: bob
+        type: string
+    required:
+    - path
+    - target_user
+    type: object
+  handler.ValidateTokenResponse:
+    properties:
+      username:
+        example: alice
+        type: string
+      valid:
+        example: true
+        type: boolean
+    type: object
+  handler.VerifyPasswordRequest:
+    properties:
+      password:
+        example: "12345678"
+        type: string
+      username:
+        example: alice
+        type: string
+    type: object
+  handler.VerifyPasswordResponse:
+    properties:
+      gid:
+        example: 1000
+        type: integer
+      success:
+        example: true
+        type: boolean
+      uid:
+        example: 1001
+        type: integer
+    type: object
+  system.FileInfo:
+    properties:
+      modified:
+        type: string
+      name:
+        type: string
+      permission:
+        type: string
+      size:
+        type: integer
+      type:
+        description: '"file" or "directory"'
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: NAS Team
+  description: |-
+    NAS multi-protocol unified authentication and file management service.
+    Register or login to obtain a JWT token, then use it to access protected endpoints.
+  title: NAS Authd API
+  version: "1.0"
+paths:
+  /files:
+    delete:
+      description: Permanently remove the specified file or directory.
+      parameters:
+      - description: Path to delete
+        in: query
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Deleted
+          schema:
+            $ref: '#/definitions/handler.OKResponse'
+        "400":
+          description: Path required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Access denied
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a file or directory
+      tags:
+      - files
+    get:
+      description: Return file list for the given path. Defaults to user's home directory.
+      parameters:
+      - description: 'Directory path (default: /data/<username>)'
+        in: query
+        name: path
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Directory listing
+          schema:
+            $ref: '#/definitions/handler.ListFilesResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Access denied
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Path not found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List directory contents
+      tags:
+      - files
+  /files/download:
+    get:
+      description: Stream file content as binary data.
+      parameters:
+      - description: File path to download
+        in: query
+        name: path
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: File content
+          schema:
+            type: file
+        "400":
+          description: Path required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Access denied
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: File not found
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Download a file
+      tags:
+      - files
+  /files/mkdir:
+    post:
+      consumes:
+      - application/json
+      description: Create a new directory under the user's data path.
+      parameters:
+      - description: Directory path
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.MkdirRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Directory created
+          schema:
+            $ref: '#/definitions/handler.OKPathResponse'
+        "400":
+          description: Path required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Access denied
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a directory
+      tags:
+      - files
+  /files/move:
+    post:
+      consumes:
+      - application/json
+      description: Move a file or directory from one path to another.
+      parameters:
+      - description: Source and destination paths
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.MoveFileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Moved
+          schema:
+            $ref: '#/definitions/handler.OKResponse'
+        "400":
+          description: From and to required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Access denied
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Move or rename a file/directory
+      tags:
+      - files
+  /files/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a file via multipart form. Target directory defaults to
+        user's home.
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: 'Target directory (default: /data/<username>)'
+        in: formData
+        name: path
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Upload successful
+          schema:
+            $ref: '#/definitions/handler.OKPathResponse'
+        "400":
+          description: File field required
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "403":
+          description: Access denied
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Upload a file
+      tags:
+      - files
+  /internal/verify-password:
+    post:
+      consumes:
+      - application/json
+      description: Internal endpoint for Samba/WebDAV password verification. Returns
+        success=false for wrong password.
+      parameters:
+      - description: Credentials
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/handler.VerifyPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Password correct
+          schema:
+            $ref: '#/definitions/handler.VerifyPasswordResponse'
+        "503":
+          description: LDAP unavailable
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Verify password (internal)
+      tags:
+      - internal
+  /login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate with LDAP bind and return a JWT token valid for 24
+        hours.
+      parameters:
+      - description: Login credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Login successful
+          schema:
+            $ref: '#/definitions/handler.LoginResponse'
+        "400":
+          description: Invalid input
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Wrong credentials
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Login
+      tags:
+      - auth
+  /register:
+    post:
+      consumes:
+      - application/json
+      description: Create a user in LDAP and Linux system, then return a JWT token.
+      parameters:
+      - description: Registration details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Registration successful
+          schema:
+            $ref: '#/definitions/handler.RegisterResponse'
+        "400":
+          description: Invalid input
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Username already taken
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "503":
+          description: LDAP unavailable
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Register a new user
+      tags:
+      - auth
+  /share/permission:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Grant or revoke POSIX ACL access for another user.
+        Actions: "readonly" (r-x), "readwrite" (rwx), "remove" (revoke all).
+      parameters:
+      - description: Permission details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.SetPermissionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Permission set
+          schema:
+            $ref: '#/definitions/handler.OKResponse'
+        "400":
+          description: Invalid input
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Set file share permission
+      tags:
+      - share
+  /validate-token:
+    get:
+      description: Check whether the provided JWT token is valid and return the username.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Token is valid
+          schema:
+            $ref: '#/definitions/handler.ValidateTokenResponse'
+        "401":
+          description: Invalid or expired token
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Validate JWT token
+      tags:
+      - auth
+securityDefinitions:
+  BearerAuth:
+    description: 'Type "Bearer " followed by your JWT token. Example: Bearer eyJhbGciOiJIUzI1NiIs...'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
