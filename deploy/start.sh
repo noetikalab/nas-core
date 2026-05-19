@@ -30,6 +30,9 @@ rpc.nfsd || true   # NFS 服务主进程
 rpc.mountd || true # 处理客户端 mount 请求
 exportfs -ra || true # 重新加载 /etc/exports 配置
 
+# 后台启动 Nginx（WebDAV，端口 8081）
+nginx &
+
 # 后台启动 Samba
 # smbd：处理文件共享和用户认证
 # nmbd：处理 NetBIOS 名称解析（Windows 网络发现）
