@@ -33,18 +33,14 @@ services:
     depends_on:
       - openldap
     privileged: true
+    network_mode: host
     environment:
-      LDAP_URL: ldap://openldap:389
+      LDAP_URL: ldap://127.0.0.1:389
       LDAP_ADMIN_DN: "cn=admin,dc=nas,dc=local"
       LDAP_ADMIN_PW: "admin123"
       LDAP_USERS_DN: "ou=users,dc=nas,dc=local"
       DOMAIN_SID: "S-1-5-21-1234567890-1234567890-1234567890"
       JWT_SECRET: "nas-demo-secret-key-32bytes-long!"
-    ports:
-      - "8080:8080"
-      - "8081:8081"
-      - "445:445"
-      - "2049:2049"
     volumes:
       - nas-data:/data
 

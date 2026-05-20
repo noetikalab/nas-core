@@ -1,5 +1,5 @@
 # 第一阶段：编译 Go 服务
-FROM golang:1.25 AS builder
+FROM golang:1.24 AS builder
 WORKDIR /app
 ENV GOPROXY=https://goproxy.cn,direct
 COPY authd/go.mod authd/go.sum ./

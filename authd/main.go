@@ -22,6 +22,7 @@ import (
 	_ "nas/docs"
 	"nas/handler"
 	"nas/ldap"
+	"nas/mdns"
 	jwtpkg "nas/pkg/jwt"
 
 	"github.com/gin-gonic/gin"
@@ -55,6 +56,7 @@ func main() {
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
+	r.GET("/device-info", handler.DeviceInfo)
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
@@ -71,6 +73,12 @@ func main() {
 	authed.POST("/files/mkdir", handler.Mkdir)
 	authed.DELETE("/files", handler.DeleteFile)
 	authed.POST("/files/move", handler.MoveFile)
+
+	go func() {
+		if err := mdns.Start(8080); err != nil {
+			log.Printf("mDNS: %v", err)
+		}
+	}()
 
 	log.Println("authd listening on :8080")
 	log.Fatal(r.Run(":8080"))

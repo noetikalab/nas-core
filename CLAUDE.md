@@ -15,6 +15,7 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 - **WebDAV**：使用 Nginx + dav-ext 模块（端口 8081），通过 auth_request 调 authd `/validate-token` 鉴权，不用 Go 实现
 - **Swagger 文档**：swaggo 注解生成，Dockerfile 构建时自动 `swag init`，无需手动维护。访问 `/swagger/index.html`
 - **DTO 命名类型**：`handler/dto.go` 存放所有请求/响应结构体，避免匿名 struct（供 swaggo 扫描 + 前端参考）
+- **mDNS 局域网发现**：`mdns/server.go` 使用 grandcat/zeroconf RegisterProxy，pickIP() 过滤 Docker 网桥 IP（172.17-31.x.x），只广播物理网卡 WiFi IP。服务类型 `_nas._tcp`，服务名 `NAS-<device_id>`。配套 `/device-info` 接口供 APP 校验设备身份。
 
 ## 目录结构
 
@@ -29,6 +30,8 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 | `authd/pkg/jwt/` | JWT Sign / Parse，Secret 由环境变量注入 |
 | `authd/system/os.go` | useradd、mkdir、setfacl |
 | `authd/system/file.go` | 文件系统操作：ListDir、OpenFile、WriteFile、ValidatePath |
+| `authd/mdns/server.go` | mDNS 广播模块（grandcat/zeroconf），广播 _nas._tcp 服务 |
+| `authd/handler/device.go` | GET /device-info（设备校验，无需 JWT） |
 | `authd/docs/` | swag init 生成的 docs.go + swagger.json（编译进二进制） |
 | `deploy/` | Dockerfile、smb.conf、nginx-webdav.conf、start.sh、ldap.conf、nsswitch.conf |
 | `ldap/` | init.ldif（OU + 组初始化） |

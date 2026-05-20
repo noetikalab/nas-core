@@ -70,3 +70,9 @@ type ListFilesResponse struct {
 	Path  string            `json:"path" example:"/data/alice"`
 	Files []system.FileInfo `json:"files"`
 }
+
+type DeviceInfoResponse struct {
+	DeviceID string `json:"device_id" example:"NAS-b827eb3a1c2d"`
+	Hostname string `json:"hostname" example:"nas"`
+	Version  string `json:"version" example:"1.0"`
+}
