@@ -26,7 +26,7 @@ func getHostname() string {
 // @Tags         device
 // @Produce      json
 // @Success      200 {object} DeviceInfoResponse "Device information"
-// @Router       /device-info [get]
+// @Router       /api/device-info [get]
 func DeviceInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, DeviceInfoResponse{
 		DeviceID: getDeviceID(),

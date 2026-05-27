@@ -20,7 +20,7 @@ import (
 // @Success      200 {object} OKResponse "Permission set"
 // @Failure      400 {object} ErrorResponse "Invalid input"
 // @Failure      401 {object} ErrorResponse "Unauthorized"
-// @Router       /share/permission [post]
+// @Router       /api/share/permission [post]
 func SetPermission(c *gin.Context) {
 	var req SetPermissionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
