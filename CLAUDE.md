@@ -17,7 +17,8 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 - **文件操作路径范围**：JWT 中间件注入 username+role，admin 可操作 `/data/` 下任意目录，user 限制在 `/data/{username}/` 下
 - **Swagger 文档**：swaggo 注解生成，Dockerfile 构建时自动 `swag init`，无需手动维护。访问 `/swagger/index.html`
 - **DTO 命名类型**：`handler/dto.go` 存放所有请求/响应结构体，避免匿名 struct（供 swaggo 扫描 + 前端参考）
-- **mDNS 局域网发现**：`mdns/server.go` 使用 grandcat/zeroconf RegisterProxy，pickIP() 过滤 Docker 网桥 IP（172.17-31.x.x），只广播物理网卡 WiFi IP。服务类型 `_nas._tcp`，服务名 `NAS-<device_id>`。配套 `/device-info` 接口供 APP 校验设备身份。
+- **mDNS 局域网发现**：`mdns/server.go` 使用 grandcat/zeroconf RegisterProxy，`pickIPs()`（原 `pickIP()`）过滤 Docker 网桥 IP（172.17-31.x.x），同时在物理网卡和 P2P 虚拟接口上广播。每个 IP 注册独立 service instance（命名格式 `NAS-{deviceID}-{IP}`），服务类型 `_nas._tcp`。配套 `/device-info` 接口供 APP 校验设备身份。
+- **WiFi P2P 直连**：NAS 作为 Group Owner。容器 `start.sh` 自动检测运行环境——桌面版（wpa_supplicant D-Bus 模式）跳过 P2P，Server 版（无 NetworkManager）容器内自动创建 P2P GO。GO IP 固定 `192.168.49.1/24`，dnsmasq 提供 DHCP（池 `.100-.200`，租约 12h）。桌面版开发期间 P2P 不可用，日常测试走 mDNS 局域网发现。
 
 ## 目录结构
 
@@ -32,7 +33,7 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 | `authd/pkg/jwt/` | JWT Sign / Parse，Secret 由环境变量注入 |
 | `authd/system/os.go` | useradd、mkdir、setfacl |
 | `authd/system/file.go` | 文件系统操作：ListDir、OpenFile、WriteFile、ValidatePath |
-| `authd/mdns/server.go` | mDNS 广播模块（grandcat/zeroconf），广播 _nas._tcp 服务 |
+| `authd/mdns/server.go` | mDNS 广播模块（grandcat/zeroconf），在物理接口和 P2P 接口上同时广播 _nas._tcp 服务 |
 | `authd/handler/device.go` | GET /api/device-info（设备校验，无需 JWT） |
 | `authd/docs/` | swag init 生成的 docs.go + swagger.json（编译进二进制） |
 | `deploy/` | Dockerfile、smb.conf、nginx-webdav.conf、start.sh、ldap.conf、nsswitch.conf |
@@ -45,7 +46,7 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 |------|------|------|
 | openldap | osixia/openldap:1.5.0 | 身份存储，启用 samba schema |
 | ldap-init | osixia/openldap:1.5.0 | 一次性初始化 OU 和组，完成后退出 |
-| nas | build: deploy/Dockerfile | Go authd + Nginx WebDAV + Samba + NFS |
+| nas | build: deploy/Dockerfile | Go authd + Nginx WebDAV + Samba + NFS + WiFi P2P GO |
 
 ## API 路由结构
 
@@ -70,11 +71,17 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 - 新增/修改 handler 后，在函数上方按现有格式添加 swaggo 注解（`@Summary` / `@Tags` / `@Param` / `@Success` / `@Failure` / `@Router`）
 - 请求/响应结构体统一定义在 `handler/dto.go`，使用命名导出类型（`error` tag 写示例值）
 - 端口分配：`8080`=authd HTTP API，`8081`=Nginx WebDAV，`445`=SMB，`2049`=NFS
+- WiFi P2P GO IP 固定 `192.168.49.1`，DHCP 池 `192.168.49.100~200`。`start.sh` 自动检测环境：桌面版 Ubuntu（NetworkManager/D-Bus）自动跳过 P2P，Server 版自动创建。桌面版开发期间走 mDNS 即可
+- 新增 `authd/mdns/server.go` 使用了 `strings` 包（`isPhysicalOrP2P` 函数），重构时注意保留
+- 容器内的 wpa_supplicant 和 P2P 操作以 root 运行（`privileged: true`），无需额外权限
 
 ## 常用命令
 
 ```bash
-# 重建
+# 启动容器
+sudo docker compose up -d
+
+# 重建（清除数据）
 sudo docker compose down -v && sudo docker compose up --build -d
 
 # 查看 LDAP 用户
@@ -96,6 +103,7 @@ sudo docker compose logs nas -f
 ## 参考文档
 
 - [技术架构设计文档 v2（飞书）](https://my.feishu.cn/docx/EhQodDF20oHLMixoRaWcrejinIf) — 完整架构图、PUF 接入方案、SDK 设计
+- [WiFi P2P + NFC + APP 综合开发方案](../wiki/WiFi_P2P_NFC_APP_开发方案.md) — P2P 直连架构、NAS/APP 对接方案、端到端时序
 
 ## 踩坑记录
 
@@ -110,6 +118,24 @@ sudo docker compose logs nas -f
 2. 如持续失败，才考虑降级镜像版本
 
 **注意**：`golang.org/x/sync@v0.20.0` 等间接依赖需要 `go >= 1.25.0`，因此 Dockerfile 必须使用 `golang:1.25`（golang:1.24 无法编译）
+
+### WiFi P2P：桌面版 Ubuntu 不可用（已知限制，非代码缺陷）
+
+**现象**：桌面版 Ubuntu 上，容器内 `wpa_cli p2p_group_add` 命令执行无效果，APP 端 P2P 发现不到设备。宿主机直接执行 `sudo wpa_cli p2p_group_add` 也返回 `FAIL`。
+
+**根因**：WiFi 芯片同一时间只能被一个 wpa_supplicant 实例控制。桌面版 Ubuntu 的 NetworkManager 通过 `wpa_supplicant -u`（D-Bus 模式）接管了 WiFi 硬件，容器内 `start.sh` 启动的独立 wpa_supplicant 无法绑定已被占用的 WiFi 接口。该模式下通过传统 Unix socket 发送 P2P 命令也返回 FAIL。
+
+**影响范围**：仅限安装了 NetworkManager 的桌面版 Ubuntu。NAS 硬件（Ubuntu Server，无 NetworkManager）以及任何没有图形网络管理器抢占 WiFi 的环境均不受影响。
+
+**处理**：
+1. 桌面版开发期间 P2P 功能不可用，日常开发测试使用 mDNS 局域网发现
+2. NAS 硬件到货（Ubuntu Server）后，容器内 P2P 自动就绪，无需代码修改
+3. `start.sh` 已内置环境检测：发现 D-Bus 模式时自动跳过 P2P 初始化
+4. APP 端 `connector.ts` 的三层降级策略（mDNS → 缓存 IP → P2P）已覆盖此场景
+
+### 代码注释语言
+
+本项目服务端代码注释全部使用中文。
 
 ## 约束
 
