@@ -83,6 +83,19 @@ type SetPermissionRequest struct {
 	Readonly   bool   `json:"readonly"`                  // 兼容旧字段
 }
 
+// PermissionEntry 单条 ACL 权限条目，表示某个用户在某路径上的访问权限。
+// 权限值来自 POSIX ACL 解析："r-x"=只读，"rwx"=读写。
+type PermissionEntry struct {
+	Username   string `json:"username" example:"bob"`
+	Permission string `json:"permission" example:"r-x"` // "r-x"（只读）或 "rwx"（读写）
+}
+
+// PermissionListResponse 路径 ACL 查询响应的数据包装。
+type PermissionListResponse struct {
+	Path        string            `json:"path" example:"/data/shared/docs"`
+	Permissions []PermissionEntry `json:"permissions"`
+}
+
 // --- 文件操作 ---
 
 type ListFilesResponse struct {
@@ -138,6 +151,21 @@ type UserListResponse struct {
 	Users []UserEntry `json:"users"`
 }
 
+// CreateUserRequest admin 创建用户的请求体。密码最小 8 位。
+// Role 默认 "user"，可指定 "admin"。
+type CreateUserRequest struct {
+	Username string `json:"username" binding:"required" example:"david"`
+	Password string `json:"password" binding:"required,min=8" example:"12345678"`
+	Role     string `json:"role" example:"user"` // 角色："admin" 或 "user"，默认 "user"
+}
+
+// CreateUserResponse admin 创建用户成功后的响应体。（不签发 JWT，与 RegisterResponse 不同）
+type CreateUserResponse struct {
+	OK       bool   `json:"ok" example:"true"`
+	Username string `json:"username" example:"david"`
+	UID      int    `json:"uid" example:"1004"`
+}
+
 // --- 服务状态 ---
 
 // ServiceStatus 单个服务的运行状态。
@@ -153,23 +181,66 @@ type ServicesResponse struct {
 	WebDAV ServiceStatus `json:"webdav"`
 }
 
-// --- 审计日志 ---
+// --- 审计日志 / 存证 ---
 
-// LogEntry 审计日志条目，API 响应中不含内部 ID 和完整路径（由前端需求决定）。
-type LogEntry struct {
-	Timestamp string `json:"timestamp" example:"2026-05-25T14:32:00Z"` // ISO 8601 / RFC3339 格式
-	Type      string `json:"type" example:"file"`                      // "file" | "auth" | "system"
-	User      string `json:"user" example:"alice"`                     // 操作者用户名
-	Action    string `json:"action" example:"upload"`                  // 操作名称
-	Detail    string `json:"detail" example:"Uploaded 2.4 MB"`        // 补充说明
+// CertifiedOperation 审计日志响应条目（对应 certified_operations 表全部字段）。
+// 验证方通过此结构可独立还原操作场景：谁在什么时候对哪个文件做了什么。
+type CertifiedOperation struct {
+	ID        int64  `json:"id" example:"42"`
+	Timestamp int64  `json:"timestamp" example:"1749300000000000000"` // Unix 纳秒
+	Type      string `json:"type" example:"file"`                     // "file" | "auth" | "system"
+	UserName  string `json:"user_name" example:"alice"`
+	UserUID   int    `json:"user_uid" example:"1001"`
+	Action    string `json:"action" example:"upload"`
+	Path      string `json:"path" example:"/data/alice/contract.pdf"`
+	DestPath  string `json:"dest_path,omitempty" example:""`            // move/rename 目标路径
+	Detail    string `json:"detail,omitempty" example:""`
+	FileName  string `json:"file_name" example:"contract.pdf"`
+	IsDir     bool   `json:"is_dir" example:"false"`
+	FileSize  int64  `json:"file_size" example:"2411724"`               // 字节
+	MimeType  string `json:"mime_type" example:"application/pdf"`
+	OwnerUID  int    `json:"owner_uid" example:"1001"`
+	OwnerName string `json:"owner_name" example:"alice"`
+	GroupName string `json:"group_name" example:"nas-users"`
+	FilePerm  string `json:"file_perm" example:"rw-r--r--"`
+	ModTime   int64  `json:"mod_time" example:"1749300000000000000"`    // Unix 纳秒
+	FileHash  string `json:"file_hash,omitempty" example:"base64..."`   // base64 编码
+	HashAlgo  string `json:"hash_algo" example:"SHA-256"`
 }
 
-// LogListResponse 审计日志分页列表响应。
-// TotalPages 由服务端计算：ceil(total / limit)。
+// LogListResponse 审计日志分页列表响应。改用 CertifiedOperation 替代旧 LogEntry。
 type LogListResponse struct {
-	Entries    []LogEntry `json:"entries"`                // 当前页日志条目
-	Total      int64      `json:"total" example:"150"`    // 符合条件的总记录数
-	Page       int        `json:"page" example:"1"`       // 当前页码
-	Limit      int        `json:"limit" example:"20"`     // 每页条数
-	TotalPages int        `json:"total_pages" example:"8"` // 总页数
+	Entries    []CertifiedOperation `json:"entries"`
+	Total      int64                `json:"total" example:"150"`
+	Page       int                  `json:"page" example:"1"`
+	Limit      int                  `json:"limit" example:"20"`
+	TotalPages int                  `json:"total_pages" example:"8"`
+}
+
+// ProofRecordResponse 单条存证记录（API 响应，字段来自 proof_records 表）。
+type ProofRecordResponse struct {
+	CertID       int64  `json:"cert_id"`
+	ChainIndex   int    `json:"chain_index"`
+	PrevHash     string `json:"prev_hash,omitempty"`    // base64 编码
+	DataHash     string `json:"data_hash"`              // base64 编码
+	Signature    string `json:"signature,omitempty"`    // base64 编码，PUF 就绪前为空
+	DeviceUID    string `json:"device_uid,omitempty"`
+	SigTimestamp int64  `json:"sig_timestamp"`
+	HashAlgo     string `json:"hash_algo"`
+}
+
+// ProofBundle 导出给验证方的完整存证包（含哈希链 + 操作记录 + 公钥）。
+type ProofBundle struct {
+	DeviceUID  string                `json:"device_uid"`
+	PubKey     string                `json:"pub_key"`             // PUF 公钥，就绪前为空
+	Records    []ProofRecordResponse `json:"records"`             // 哈希链记录
+	Operations []CertifiedOperation  `json:"operations"`          // 对应的操作记录
+	ExportTime int64                 `json:"export_time"`         // Unix 纳秒
+	TotalCount int                   `json:"total_count"`
+}
+
+// ProofDetailResponse 单条日志 + 存证位置的组合查询响应。
+type ProofDetailResponse struct {
+	Operation   CertifiedOperation `json:"operation"`
+	ProofRecord ProofRecordResponse `json:"proof_record"`
 }

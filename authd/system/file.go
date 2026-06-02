@@ -78,7 +78,7 @@ func ListDir(path string) ([]FileInfo, error) {
 			fi.Type = "file"
 			fi.Size = info.Size()
 		}
-		fi.Permission = permStr(info.Mode())
+		fi.Permission = PermStr(info.Mode())
 		files = append(files, fi)
 	}
 	return files, nil
@@ -149,9 +149,9 @@ func MovePath(from, to string) error {
 	return os.Rename(from, to)
 }
 
-// permStr 将 os.FileMode 转换为 "rwx" 格式的三字符权限字符串。
+// PermStr 将 os.FileMode 转换为 "rwx" 格式的三字符权限字符串。
 // 只取 user 权限位（owner），忽略 group/other。
-func permStr(mode os.FileMode) string {
+func PermStr(mode os.FileMode) string {
 	b := make([]byte, 3)
 	if mode&0400 != 0 {
 		b[0] = 'r'

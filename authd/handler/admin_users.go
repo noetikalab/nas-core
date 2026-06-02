@@ -100,3 +100,56 @@ func CountUsers(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"count": count})
 }
+
+// CreateUser admin 创建新用户。
+//
+// 流程与 Register 相同（LDAP → useradd → 数据目录），区别：
+//   - 不由用户自己调用，由 admin 调用
+//   - 不签发 JWT（admin 在为别人创建账号）
+//   - admin 可指定角色（默认 "user"）
+//
+// 注意：多步操作（LDAP / useradd / mkdir）之间没有事务回滚。
+// 如果某一步失败，前面已完成的步骤不会撤销。具体风险记录在 CLAUDE.md。
+func CreateUser(c *gin.Context) {
+	var req CreateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
+		return
+	}
+
+	// 角色默认值
+	if req.Role == "" {
+		req.Role = "user"
+	}
+
+	conn, err := ldap.Conn()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ldap unavailable"})
+		return
+	}
+	defer conn.Close()
+
+	// 分配下一个可用的 UID（从 1001 开始递增）
+	uid, err := ldap.NextUID(conn)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "uid alloc failed"})
+		return
+	}
+
+	// 在 LDAP 中创建用户条目
+	if err = ldap.AddUser(conn, req.Username, uid, req.Password, req.Role); err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "username taken or ldap error"})
+		return
+	}
+
+	// 在 Linux 系统中创建用户（useradd）
+	if err = system.CreateUser(req.Username, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "system user creation failed"})
+		return
+	}
+
+	// 创建数据目录 /data/{username} 并设置权限
+	system.CreateDataDir(req.Username, uid)
+
+	c.JSON(http.StatusOK, CreateUserResponse{OK: true, Username: req.Username, UID: uid})
+}

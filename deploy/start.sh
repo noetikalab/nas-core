@@ -40,6 +40,14 @@ nginx &
 smbd --foreground --no-process-group &
 nmbd --foreground --no-process-group &
 
+# 初始化共享目录 /data/shared
+# 权限 755（rwxr-xr-x）：owner=root，组=nas-users，组内只读
+# chmod g+s：setgid，子文件和子目录自动继承 nas-users 组
+mkdir -p /data/shared
+chown 0:1000 /data/shared
+chmod 755 /data/shared
+chmod g+s /data/shared
+
 # ====================================================================
 # WiFi Direct P2P — NAS 作为 Group Owner
 # 手机通过 WiFi Direct 直连 NAS，无需路由器

@@ -1,24 +1,30 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"nas/repository"
+	"nas/system"
 
 	"github.com/gin-gonic/gin"
 )
 
-// ListLogs 返回分页的操作日志，数据来源为 SQLite（持久化存储）。
+// ListLogs 返回分页的存证操作日志，数据来源为 certified_operations 表。
 //
 // 查询参数：
 //   - page：页码，默认 1
 //   - limit：每页条数，默认 20，最大 100
 //   - type：日志类型过滤（"file" | "auth" | "system"），空字符串表示不过滤
 //   - username：操作者过滤，空字符串表示不过滤
-//
-// 返回 paginated JSON，包含当前页条目、总数、总页数等元信息。
 func ListLogs(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -31,21 +37,15 @@ func ListLogs(c *gin.Context) {
 	logType := c.Query("type")
 	username := c.Query("username")
 
-	rows, total, err := logRepo().Query(c.Request.Context(), page, limit, logType, username)
+	rows, total, err := certifiedRepo().Query(c.Request.Context(), page, limit, logType, username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: "log query failed"})
 		return
 	}
 
-	entries := make([]LogEntry, len(rows))
+	entries := make([]CertifiedOperation, len(rows))
 	for i, r := range rows {
-		entries[i] = LogEntry{
-			Timestamp: r.Timestamp.UTC().Format(time.RFC3339),
-			Type:      r.Type,
-			User:      r.Username,
-			Action:    r.Action,
-			Detail:    r.Detail,
-		}
+		entries[i] = toCertifiedOperation(&r)
 	}
 
 	c.JSON(http.StatusOK, LogListResponse{
@@ -53,49 +53,214 @@ func ListLogs(c *gin.Context) {
 		Total:      total,
 		Page:       page,
 		Limit:      limit,
-		TotalPages: (int(total) + limit - 1) / limit, // 向上取整
+		TotalPages: (int(total) + limit - 1) / limit,
 	})
 }
 
-// --- Repository 依赖注入 ---
+// buildCertifiedOp 构建完整的存证操作记录。
+// 收集文件元信息（os.Stat + 所有者查询），计算文件哈希（SHA-256，puf-agent 就绪后改为 SM3）。
+// 返回 repository.CertifiedOpRow 供 Insert 使用。
+func buildCertifiedOp(username, action, path string, size int64, destPath, detail string) *repository.CertifiedOpRow {
+	row := &repository.CertifiedOpRow{
+		Timestamp: time.Now().UnixNano(),
+		Type:      "file",
+		UserName:  username,
+		Action:    action,
+		Path:      path,
+		DestPath:  destPath,
+		Detail:    detail,
+		FileName:  filepath.Base(path),
+	}
 
-// logRepoInstance 是全局的日志仓库实例，由 main.go 在初始化时通过 SetLogRepo 注入。
-// 使用包级变量实现简单的依赖注入（替代复杂的 DI 框架），
-// handler 层不关心具体实现，只依赖 LogRepository 接口。
+	// 收集文件元信息（非 delete 操作需要 stat 文件）
+	if action != "delete" {
+		info, err := os.Stat(path)
+		if err == nil {
+			row.IsDir = info.IsDir()
+			row.FileSize = info.Size()
+			row.ModTime = info.ModTime().UnixNano()
+			row.FilePerm = system.PermStr(info.Mode())
+			row.MimeType = inferMime(filepath.Ext(path))
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				row.OwnerUID = int(stat.Uid)
+			}
+		}
+	}
+	row.FileName = filepath.Base(path)
+	row.GroupName = "nas-users"
+
+	// 推断所有者用户名（从路径提取，如 /data/alice/xxx → "alice"）
+	if row.OwnerUID != 0 {
+		row.OwnerName = extractUserFromPath(path)
+		if row.OwnerName == "shared" {
+			row.OwnerName = "root"
+		}
+	}
+
+	// 计算文件内容哈希（仅 upload/download 操作，目录/delete/move 不需要）
+	if (action == "upload" || action == "download") && !row.IsDir {
+		row.FileHash = sha256File(path)
+		row.HashAlgo = "SHA-256"
+	}
+
+	// non-file actions
+	if action == "mkdir" {
+		row.IsDir = true
+	}
+
+	return row
+}
+
+// recordCertifiedOp 写入存证操作记录 + 补哈希链。
+// 这是 handler 层统一的存证写入入口，替代旧 logbuf + logRepo。
+// 返回 certID，供调用方后续签名时使用。
+func recordCertifiedOp(c *gin.Context, username, action, path string, size int64, destPath, detail string) int64 {
+	row := buildCertifiedOp(username, action, path, size, destPath, detail)
+
+	certID, err := certifiedRepo().Insert(c.Request.Context(), row)
+	if err != nil {
+		return 0
+	}
+
+	// 补哈希链
+	prevHash, _ := proofRepo().GetLastHash(c.Request.Context())
+	chainIdx, _ := proofRepo().NextChainIndex(c.Request.Context())
+	dataHash := chainHash(row, prevHash)
+
+	proofRepo().Insert(c.Request.Context(), &repository.ProofRow{
+		CertID:     certID,
+		ChainIndex: chainIdx,
+		PrevHash:   prevHash,
+		DataHash:   dataHash,
+		HashAlgo:   "SHA-256",
+	})
+
+	return certID
+}
+
+// -------------------- 辅助函数 --------------------
+
+// sha256File 计算文件的 SHA-256 哈希。失败时返回 nil。
+func sha256File(path string) []byte {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	h := sha256.Sum256(data)
+	return h[:]
+}
+
+// inferMime 根据文件扩展名推断 MIME 类型。
+// 仅覆盖常见类型，其他返回 "application/octet-stream"。
+func inferMime(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".pdf":
+		return "application/pdf"
+	case ".txt", ".md", ".log":
+		return "text/plain"
+	case ".html", ".htm":
+		return "text/html"
+	case ".json":
+		return "application/json"
+	case ".xml":
+		return "application/xml"
+	case ".zip":
+		return "application/zip"
+	case ".tar", ".gz", ".tgz":
+		return "application/gzip"
+	case ".mp4":
+		return "video/mp4"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".doc", ".docx":
+		return "application/msword"
+	case ".xls", ".xlsx":
+		return "application/vnd.ms-excel"
+	case ".ppt", ".pptx":
+		return "application/vnd.ms-powerpoint"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// chainHash 计算哈希链上当前节点的哈希值。
+// 串联操作记录所有关键字段 + 前一条记录的哈希，再做 SHA-256。
+func chainHash(row *repository.CertifiedOpRow, prevHash []byte) []byte {
+	data := fmt.Sprintf("%d:%s:%s:%s:%s:%s:%x",
+		row.Timestamp, row.UserName, row.Action, row.Path, row.FileName, row.MimeType, row.FileHash)
+	h := sha256.New()
+	h.Write(prevHash)
+	h.Write([]byte(data))
+	return h.Sum(nil)
+}
+
+// toCertifiedOperation 将数据库行转换为 API 响应 DTO。
+func toCertifiedOperation(r *repository.CertifiedOpRow) CertifiedOperation {
+	return CertifiedOperation{
+		ID:        r.ID,
+		Timestamp: r.Timestamp,
+		Type:      r.Type,
+		UserName:  r.UserName,
+		UserUID:   r.UserUID,
+		Action:    r.Action,
+		Path:      r.Path,
+		DestPath:  r.DestPath,
+		Detail:    r.Detail,
+		FileName:  r.FileName,
+		IsDir:     r.IsDir,
+		FileSize:  r.FileSize,
+		MimeType:  r.MimeType,
+		OwnerUID:  r.OwnerUID,
+		OwnerName: r.OwnerName,
+		GroupName: r.GroupName,
+		FilePerm:  r.FilePerm,
+		ModTime:   r.ModTime,
+		FileHash:  base64.StdEncoding.EncodeToString(r.FileHash),
+		HashAlgo:  r.HashAlgo,
+	}
+}
+
+// -------------------- Repository 依赖注入 --------------------
+
+var certifiedRepoInstance repository.CertifiedRepository
+var proofRepoInstance repository.ProofRepository
+
+// SetCertifiedRepos 设置全局存证仓库实例。在程序启动时由 main.go 调用一次。
+func SetCertifiedRepos(cr repository.CertifiedRepository, pr repository.ProofRepository) {
+	certifiedRepoInstance = cr
+	proofRepoInstance = pr
+}
+
+func certifiedRepo() repository.CertifiedRepository {
+	if certifiedRepoInstance == nil {
+		panic("CertifiedRepository not set")
+	}
+	return certifiedRepoInstance
+}
+
+func proofRepo() repository.ProofRepository {
+	if proofRepoInstance == nil {
+		panic("ProofRepository not set")
+	}
+	return proofRepoInstance
+}
+
+// --- 向后兼容：保留 logRepo/fileLogRepo 别名（Dashboard 等沿用） ---
+// 这些已不再需要，但 Dashboard handler 目前引用它们。
+// 待 Dashboard handler 重构后移除。
+
 var logRepoInstance repository.LogRepository
 
-// SetLogRepo 设置全局日志仓库实例。在程序启动时由 main.go 调用一次。
+// SetLogRepo 设置全局日志仓库实例（向后兼容，Dashboard handler 仍依赖此注入）。
 func SetLogRepo(r repository.LogRepository) {
 	logRepoInstance = r
 }
 
-// logRepo 获取日志仓库实例。如果未设置则 panic（检测启动顺序错误）。
-// 文件操作 handler（file.go、admin_files.go）通过此函数获取仓库实例。
-func logRepo() repository.LogRepository {
-	if logRepoInstance == nil {
-		panic("LogRepository not set — call handler.SetLogRepo() during init")
-	}
-	return logRepoInstance
-}
-
-// fileLogRepo 返回日志仓库实例，供文件操作 handler 使用。
-// 与 logRepo 指向同一实例，单独函数是为了语义清晰：文件操作日志使用。
-func fileLogRepo() repository.LogRepository {
-	return logRepo()
-}
-
-// toLogEntry 将 handler 层的参数转换为 repository.LogEntry 数据库模型。
-//
-// Timestamp 在这里设置为当前时间，确保与 logbuf 环形缓冲中的时间戳一致
-// （logbuf.Default.Append 也会自动设置 e.Timestamp）。
-func toLogEntry(logType, username, action, path string, size int64, detail string) *repository.LogEntry {
-	return &repository.LogEntry{
-		Timestamp: time.Now(),
-		Type:      logType,
-		Username:  username,
-		Action:    action,
-		Path:      path,
-		Size:      size,
-		Detail:    detail,
-	}
-}
+func logRepo() repository.LogRepository { return logRepoInstance }
+func fileLogRepo() repository.LogRepository { return logRepo() }

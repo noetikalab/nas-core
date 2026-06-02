@@ -1,13 +1,14 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"nas/ldap"
-	"nas/logbuf"
 	"nas/system"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,7 @@ import (
 
 // validatePath 根据角色选择路径校验策略，返回规范化路径。
 //
-// user  → 限制在 /data/{username}/ 子树内（调用 system.ValidatePath）
+// user  → 限制在 /data/{username}/ 子树内，或 /data/shared/ 共享目录
 // admin → 限制在 /data/ 子树内（调用 system.ValidateAdminPath）
 //
 // 两个校验函数都使用 filepath.Clean 规范化路径后再做前缀匹配，防止路径穿越。
@@ -27,7 +28,45 @@ func validatePath(username, role, requestedPath string) (string, error) {
 	if role == "admin" {
 		return system.ValidateAdminPath(requestedPath)
 	}
+	clean := filepath.Clean(requestedPath)
+	// 普通用户可读共享目录 /data/shared/
+	if strings.HasPrefix(clean, "/data/shared") {
+		return clean, nil
+	}
 	return system.ValidatePath(username, requestedPath)
+}
+
+// validateWritePath 在 validatePath 基础上额外限制普通用户不能写共享目录。
+// 共享目录默认只读，除非 admin 通过 POSIX ACL 授予了该用户 rwx 权限。
+// 读操作（List/Download）使用 validatePath，写操作（Upload/Mkdir/Delete/Move）使用此函数。
+func validateWritePath(username, role, requestedPath string) (string, error) {
+	clean, err := validatePath(username, role, requestedPath)
+	if err != nil {
+		return "", err
+	}
+	// 非 admin 对共享目录的写操作：检查 POSIX ACL 是否单独授权
+	if role != "admin" && strings.HasPrefix(clean, "/data/shared") && clean != "/data/shared" {
+		if !hasACLWrite(clean, username) {
+			return "", fmt.Errorf("shared directory is read-only")
+		}
+	}
+	return clean, nil
+}
+
+// hasACLWrite 检查指定用户在路径上是否有 POSIX ACL 写权限（rwx）。
+// 通过 getfacl 解析 user:{username}:rwx 条目判断。
+func hasACLWrite(path, username string) bool {
+	out, err := exec.Command("getfacl", "-c", path).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	target := fmt.Sprintf("user:%s:rwx", username)
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == target {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveUID 根据角色和目标路径解析文件操作后 chown 的目标 UID。
@@ -38,14 +77,15 @@ func validatePath(username, role, requestedPath string) (string, error) {
 //	提取失败时 fallback 返回 0（root），
 //	此时 os.Chown(0, 1000) 会将文件送给 root:nas-users，这在 admin
 //	操作 /data/ 根目录下的文件时是合理的。
+//	共享目录 /data/shared/ 下的文件也采用 root:nas-users。
 func resolveUID(username, role, requestPath string) int {
-	if role == "admin" {
+	if role == "admin" || strings.HasPrefix(requestPath, "/data/shared") {
 		// 从路径中提取目标用户名，如 /data/alice/photos → "alice"
 		target := extractUserFromPath(requestPath)
-		if target != "" {
+		if target != "" && target != "shared" {
 			return lookupUID(target)
 		}
-		return 0 // 无法提取用户名，fallback root
+		return 0 // shared 目录或无法提取：fallback root
 	}
 	return lookupUID(username)
 }
@@ -205,7 +245,7 @@ func UploadFile(c *gin.Context) {
 		}
 	}
 
-	cleanDir, err := validatePath(username, role, targetDir)
+	cleanDir, err := validateWritePath(username, role, targetDir)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
@@ -232,14 +272,7 @@ func UploadFile(c *gin.Context) {
 		return
 	}
 
-	logbuf.Default.Append(logbuf.Entry{
-		Type:   "file",
-		User:   username,
-		Action: "upload",
-		Path:   destPath,
-		Size:   file.Size,
-	})
-	fileLogRepo().Insert(c.Request.Context(), toLogEntry("file", username, "upload", destPath, file.Size, ""))
+		recordCertifiedOp(c, username, "upload", destPath, file.Size, "", "")
 
 	c.JSON(http.StatusOK, OKPathResponse{OK: true, Path: destPath})
 }
@@ -267,7 +300,7 @@ func Mkdir(c *gin.Context) {
 		return
 	}
 
-	cleanPath, err := validatePath(username, role, req.Path)
+	cleanPath, err := validateWritePath(username, role, req.Path)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
@@ -280,13 +313,7 @@ func Mkdir(c *gin.Context) {
 		return
 	}
 
-	logbuf.Default.Append(logbuf.Entry{
-		Type:   "file",
-		User:   username,
-		Action: "mkdir",
-		Path:   cleanPath,
-	})
-	fileLogRepo().Insert(c.Request.Context(), toLogEntry("file", username, "mkdir", cleanPath, 0, ""))
+	recordCertifiedOp(c, username, "mkdir", cleanPath, 0, "", "")
 
 	c.JSON(http.StatusOK, OKPathResponse{OK: true, Path: cleanPath})
 }
@@ -313,7 +340,7 @@ func DeleteFile(c *gin.Context) {
 		return
 	}
 
-	cleanPath, err := validatePath(username, role, path)
+	cleanPath, err := validateWritePath(username, role, path)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
@@ -324,13 +351,7 @@ func DeleteFile(c *gin.Context) {
 		return
 	}
 
-	logbuf.Default.Append(logbuf.Entry{
-		Type:   "file",
-		User:   username,
-		Action: "delete",
-		Path:   cleanPath,
-	})
-	fileLogRepo().Insert(c.Request.Context(), toLogEntry("file", username, "delete", cleanPath, 0, ""))
+	recordCertifiedOp(c, username, "delete", cleanPath, 0, "", "")
 
 	c.JSON(http.StatusOK, OKResponse{OK: true})
 }
@@ -359,12 +380,12 @@ func MoveFile(c *gin.Context) {
 	}
 
 	// from 和 to 都必须独立通过路径校验
-	cleanFrom, err := validatePath(username, role, req.From)
+	cleanFrom, err := validateWritePath(username, role, req.From)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
 	}
-	cleanTo, err := validatePath(username, role, req.To)
+	cleanTo, err := validateWritePath(username, role, req.To)
 	if err != nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "access denied"})
 		return
@@ -375,14 +396,7 @@ func MoveFile(c *gin.Context) {
 		return
 	}
 
-	logbuf.Default.Append(logbuf.Entry{
-		Type:   "file",
-		User:   username,
-		Action: "move",
-		Path:   cleanFrom,
-		Detail: "→ " + cleanTo,
-	})
-	fileLogRepo().Insert(c.Request.Context(), toLogEntry("file", username, "move", cleanFrom, 0, "→ "+cleanTo))
+	recordCertifiedOp(c, username, "move", cleanFrom, 0, cleanTo, "→ "+cleanTo)
 
 	c.JSON(http.StatusOK, OKResponse{OK: true})
 }

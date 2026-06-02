@@ -14,11 +14,14 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 - **文件操作 API**：在 authd 内实现 REST + JSON（不拆微服务），供 APP 使用；自定义响应字段，不走 WebDAV XML
 - **WebDAV**：使用 Nginx + dav-ext 模块（端口 8081），通过 auth_request 调 authd `/api/validate-token` 鉴权，不用 Go 实现
 - **API 前缀**：所有接口统一 `/api/` 前缀（含 login、register、files、device-info 等），仅 `/swagger/*any` 和 `/internal/*` 例外
-- **文件操作路径范围**：JWT 中间件注入 username+role，admin 可操作 `/data/` 下任意目录，user 限制在 `/data/{username}/` 下
+- **文件操作路径范围**：JWT 中间件注入 username+role，admin 可操作 `/data/` 下任意目录，user 限制在 `/data/{username}/` 下。共享目录 `/data/shared/` 普通用户只读，admin 通过 POSIX ACL 单独授权写权限。
+- **文件操作读写分离**：读操作（List/Download）走 `validatePath`，写操作（Upload/Mkdir/Delete/Move）走 `validateWritePath`。`validateWritePath` 对共享目录额外检查 `getfacl` 确认 ACL 写权限。
 - **Swagger 文档**：swaggo 注解生成，Dockerfile 构建时自动 `swag init`，无需手动维护。访问 `/swagger/index.html`
 - **DTO 命名类型**：`handler/dto.go` 存放所有请求/响应结构体，避免匿名 struct（供 swaggo 扫描 + 前端参考）
 - **mDNS 局域网发现**：`mdns/server.go` 使用 grandcat/zeroconf RegisterProxy，`pickIPs()`（原 `pickIP()`）过滤 Docker 网桥 IP（172.17-31.x.x），同时在物理网卡和 P2P 虚拟接口上广播。每个 IP 注册独立 service instance（命名格式 `NAS-{deviceID}-{IP}`），服务类型 `_nas._tcp`。配套 `/device-info` 接口供 APP 校验设备身份。
 - **WiFi P2P 直连**：NAS 作为 Group Owner。容器 `start.sh` 自动检测运行环境——桌面版（wpa_supplicant D-Bus 模式）跳过 P2P，Server 版（无 NetworkManager）容器内自动创建 P2P GO。GO IP 固定 `192.168.49.1/24`，dnsmasq 提供 DHCP（池 `.100-.200`，租约 12h）。桌面版开发期间 P2P 不可用，日常测试走 mDNS 局域网发现。
+- **共享目录 `/data/shared`**：容器 `start.sh` 启动时自动创建（`mkdir` + `chown 0:1000` + `chmod 755` + `chmod g+s`）。普通用户默认只读，admin 通过 `POST /api/share/permission` 授权特定用户读写（setfacl user:{name}:rwx）。
+- **PUF 存证**：每个文件操作写入 `certified_operations` 表（含操作者 + 文件元信息 + SHA-256 内容指纹），同时追加 `proof_records` 哈希链（prev_hash → data_hash）。PUF 签名待 puf-agent 就绪后补入。验证方导出 ProofBundle（含完整哈希链 + PUF 公钥）后独立验证。
 
 ## 目录结构
 
@@ -28,7 +31,12 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 | `authd/handler/auth.go` | 注册/登录/验证 token/验密 |
 | `authd/handler/file.go` | 文件操作：列表/上传/下载/建目录/删除/移动 |
 | `authd/handler/permission.go` | ACL 权限设置 |
-| `authd/handler/dto.go` | 所有请求/响应命名类型（14 个 struct） |
+| `authd/handler/admin_users.go` | 用户管理：列表/创建/删除/计数 |
+| `authd/handler/admin_logs.go` | 审计日志：分页查询 `certified_operations` 表；`buildCertifiedOp` 构建存证记录；`recordCertifiedOp` 写入日志 + 补哈希链 |
+| `authd/handler/admin_proof.go` | 存证：查询单条记录/导出 ProofBundle |
+| `authd/handler/dto.go` | 所有请求/响应命名类型（含 CertifiedOperation 22 字段） |
+| `authd/repository/certified_repo.go` | CertifiedRepository + ProofRepository（sqlx 实现） |
+| `authd/db/migrations/002_certified_proof.up.sql` | certified_operations + proof_records 建表迁移 |
 | `authd/ldap/` | LDAP 客户端：连接、AddUser、Bind、GetUID、NextUID |
 | `authd/pkg/jwt/` | JWT Sign / Parse，Secret 由环境变量注入 |
 | `authd/system/os.go` | useradd、mkdir、setfacl |
@@ -55,9 +63,9 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 | 分组 | 路由 | 认证 |
 |------|------|------|
 | 公开 | `/api/ping` `/api/device-info` `/api/register` `/api/login` | 无 |
-| 认证 | `/api/validate-token` `/api/share/permission` | JWT |
+| 认证 | `/api/validate-token` `/api/share/permission` `/api/share/permissions` | JWT |
 | 文件 | `/api/files` `/api/files/download` `/api/files/upload` `/api/files/mkdir` `/api/files/move` | JWT（角色自适应） |
-| 管理 | `/api/dashboard/*` `/api/users/*` `/api/logs` `/api/services` | JWT + admin |
+| 管理 | `/api/dashboard/*` `/api/users` `/api/users/count` `/api/users/:username` `/api/logs` `/api/proof/:id` `/api/proof/bundle` `/api/services` | JWT + admin |
 | 其他 | `/swagger/*any` `/internal/verify-password` | 无 |
 
 ## 开发注意事项
@@ -74,6 +82,9 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 - WiFi P2P GO IP 固定 `192.168.49.1`，DHCP 池 `192.168.49.100~200`。`start.sh` 自动检测环境：桌面版 Ubuntu（NetworkManager/D-Bus）自动跳过 P2P，Server 版自动创建。桌面版开发期间走 mDNS 即可
 - 新增 `authd/mdns/server.go` 使用了 `strings` 包（`isPhysicalOrP2P` 函数），重构时注意保留
 - 容器内的 wpa_supplicant 和 P2P 操作以 root 运行（`privileged: true`），无需额外权限
+- `/data/shared` 目录由 `start.sh` 在容器启动时自动创建并初始化权限。如果重建容器后发现 shared 不存在，检查 `start.sh` 中是否有 `mkdir -p /data/shared` 及后续 chown/chmod 命令
+- PUF 存证的哈希链在文件操作完成后**同步写入**（`recordCertifiedOp` 在同一次 HTTP 请求内完成日志 + 哈希链写入）。如果 puf-agent 未就绪，`proof_records.signature` 为 NULL，验证时返回 "PUF 签名待启用"
+- `certified_operations` 表已替代旧的 `operation_logs` 表。`SetLogRepo` 仅向后兼容 Dashboard handler，新代码应使用 `certifiedRepo()` 和 `proofRepo()`
 
 ## 常用命令
 
@@ -137,7 +148,34 @@ sudo docker compose logs nas -f
 
 本项目服务端代码注释全部使用中文。
 
+### POSIX ACL 授权静默失败（待诊断）
+
+**现象**：`POST /api/share/permission` 返回 200 OK，但 `getfacl` 查不到新设的 ACL 条目，用户权限未实际变更。前端 ShareDialog 显示权限列表无变化。
+
+**根因**：`system.SetACL` 中 `exec.Command("setfacl", ...).Run()` 静默丢弃了所有错误返回值。可能原因——Docker volume 底层文件系统（ext4 overlay）不支持 ACL，或 `setfacl` 因权限不足失败。
+
+**处理**：
+1. 待诊断：在容器内手动执行 `setfacl -m user:bob:rwx /data/shared/docs && getfacl -c /data/shared/docs`
+2. 修复方向：`SetACL`/`RemoveACL` 返回 `error`，`SetPermission` 根据 error 返回 500
+
 ## 约束
 
 - **Go 版本**：Dockerfile 固定 `golang:1.25`（依赖要求 go >= 1.25）
 - **go.mod**：go 指令需 `1.25.0`，本地 Go 1.26 编译和 go mod tidy 都兼容
+
+## 保留讨论点
+
+### 用户操作原子性风险
+
+用户注册（`Register`）和管理员创建用户（`CreateUser`）涉及多步 Linux 系统命令，各步骤之间没有事务回滚：
+
+```
+LDAP AddUser → useradd → CreateDataDir
+    ↓ 失败           ↓ 失败          ↓ 失败
+  应回滚 LDAP      应回滚 LDAP     应回滚 useradd
+  当前：不回滚      当前：不回滚      当前：不回滚
+```
+
+**当前风险**：如果 LDAP 创建成功但 `useradd` 失败，LDAP 中会残留一个无法登录的幽灵用户。删除用户时先删 LDAP 后做 best-effort Linux 清理，如果 LDAP 删除成功但 Linux 清理失败，磁盘上会残留目录。
+
+**暂不实现事务回滚的原因**：Demo 阶段用户量极小，手动清理即可。正式上线前需要设计两阶段提交或补偿事务机制。

@@ -94,6 +94,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("db connect: %v", err)
 	}
+	handler.SetCertifiedRepos(repository.NewCertifiedRepo(sqlDB), repository.NewProofRepo(sqlDB))
 	handler.SetLogRepo(repository.NewLogRepo(sqlDB))
 
 	// ==================== 3. Router 初始化 ====================
@@ -117,6 +118,7 @@ func main() {
 	api := r.Group("/api", jwtMiddleware())
 	api.GET("/validate-token", handler.ValidateToken)               // 验证 JWT 有效性
 	api.POST("/share/permission", handler.SetPermission)            // 文件分享/ACL 权限设置
+	api.GET("/share/permissions", handler.QueryPermissions)         // 查询路径 ACL 权限列表
 
 	// --- 文件操作 API（需要 JWT） ---
 	api.GET("/files", handler.ListFiles)                            // 列出目录
@@ -131,9 +133,12 @@ func main() {
 	admin.GET("/dashboard/stats", handler.DashboardStats)           // 系统资源概览
 	admin.GET("/dashboard/recent", handler.RecentFiles)             // 最近文件操作
 	admin.GET("/users", handler.ListUsers)                          // 用户列表
+	admin.POST("/users", handler.CreateUser)                        // admin 创建用户
 	admin.GET("/users/count", handler.CountUsers)                   // 用户数
 	admin.DELETE("/users/:username", handler.DeleteUser)            // 删除用户
 	admin.GET("/logs", handler.ListLogs)                            // 审计日志（分页）
+	admin.GET("/proof/:id", handler.GetProof)                       // 存证记录详情
+	admin.GET("/proof/bundle", handler.GetProofBundle)              // 导出存证包
 	admin.GET("/services", handler.ListServices)                    // 服务状态
 
 	// ==================== 4. mDNS 局域网发现 ====================
