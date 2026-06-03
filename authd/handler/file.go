@@ -54,13 +54,26 @@ func validateWritePath(username, role, requestedPath string) (string, error) {
 }
 
 // hasACLWrite 检查指定用户在路径上是否有 POSIX ACL 写权限（rwx）。
-// 通过 getfacl 解析 user:{username}:rwx 条目判断。
+// 通过 getfacl 解析 user:{uid}:rwx 条目判断。
+// 使用数字 UID 匹配而非用户名——容器内 setfacl 无法解析 LDAP 用户名，
+// ACL 中存储的是数字 UID（由 system.ResolveACLUser 转换）。
+// 如果路径本身不存在（mkdir、move 目标等新建操作），向上查找
+// 最近已存在父目录的 ACL 作为判断依据。
 func hasACLWrite(path, username string) bool {
-	out, err := exec.Command("getfacl", "-c", path).CombinedOutput()
+	checkPath := path
+	if _, err := os.Stat(checkPath); os.IsNotExist(err) {
+		checkPath = filepath.Dir(checkPath)
+	}
+	out, err := exec.Command("getfacl", "-c", checkPath).CombinedOutput()
 	if err != nil {
 		return false
 	}
-	target := fmt.Sprintf("user:%s:rwx", username)
+	// 将用户名转换为 UID，匹配 ACL 中的数字 UID 条目（如 user:1002:rwx）
+	uid := lookupUID(username)
+	if uid == 0 {
+		return false
+	}
+	target := fmt.Sprintf("user:%d:rwx", uid)
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.TrimSpace(line) == target {
 			return true

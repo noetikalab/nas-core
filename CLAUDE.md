@@ -148,15 +148,16 @@ sudo docker compose logs nas -f
 
 本项目服务端代码注释全部使用中文。
 
-### POSIX ACL 授权静默失败（待诊断）
+### POSIX ACL 授权静默失败（已解决 ✅）
 
-**现象**：`POST /api/share/permission` 返回 200 OK，但 `getfacl` 查不到新设的 ACL 条目，用户权限未实际变更。前端 ShareDialog 显示权限列表无变化。
+**现象**：`POST /api/share/permission` 返回 200 OK，但 `getfacl` 查不到新设的 ACL 条目，用户权限未实际变更。
 
-**根因**：`system.SetACL` 中 `exec.Command("setfacl", ...).Run()` 静默丢弃了所有错误返回值。可能原因——Docker volume 底层文件系统（ext4 overlay）不支持 ACL，或 `setfacl` 因权限不足失败。
+**根因**：`setfacl -m user:bob:rwx` 在容器内执行时，`setfacl` 需要将用户名 `bob` 解析为 UID。LDAP 用户不在 `/etc/passwd` 中，NSS 对其不可见，`setfacl` 报告 `Option -m: Invalid argument near character 6`。而 `.Run()` 静默丢弃了错误输出。
 
-**处理**：
-1. 待诊断：在容器内手动执行 `setfacl -m user:bob:rwx /data/shared/docs && getfacl -c /data/shared/docs`
-2. 修复方向：`SetACL`/`RemoveACL` 返回 `error`，`SetPermission` 根据 error 返回 500
+**修复**：
+1. `system/os.go` — `SetACL` 和 `RemoveACL` 中，传入用户名后先通过 LDAP 查询 UID，再以数字 UID 格式（如 `user:1002:rwx`）传给 `setfacl`
+2. `handler/file.go` — `hasACLWrite` 改为先用 LDAP 查 UID，再用 `user:{uid}:rwx` 匹配 `getfacl` 输出
+3. 所有 `exec.Command().Run()` → `CombinedOutput()`，失败时记录日志
 
 ## 约束
 
