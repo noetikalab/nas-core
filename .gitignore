@@ -1,6 +1,7 @@
 # Go
 authd/vendor/
 *.exe
+authd/nas
 
 # 环境变量
 .env
