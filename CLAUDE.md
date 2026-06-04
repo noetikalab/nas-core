@@ -22,6 +22,7 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 - **WiFi P2P 直连**：NAS 作为 Group Owner。容器 `start.sh` 自动检测运行环境——桌面版（wpa_supplicant D-Bus 模式）跳过 P2P，Server 版（无 NetworkManager）容器内自动创建 P2P GO。GO IP 固定 `192.168.49.1/24`，dnsmasq 提供 DHCP（池 `.100-.200`，租约 12h）。桌面版开发期间 P2P 不可用，日常测试走 mDNS 局域网发现。
 - **共享目录 `/data/shared`**：容器 `start.sh` 启动时自动创建（`mkdir` + `chown 0:1000` + `chmod 755` + `chmod g+s`）。普通用户默认只读，admin 通过 `POST /api/share/permission` 授权特定用户读写（setfacl user:{name}:rwx）。
 - **PUF 存证**：每个文件操作写入 `certified_operations` 表（含操作者 + 文件元信息 + SHA-256 内容指纹），同时追加 `proof_records` 哈希链（prev_hash → data_hash）。PUF 签名待 puf-agent 就绪后补入。验证方导出 ProofBundle（含完整哈希链 + PUF 公钥）后独立验证。
+- **NFC 碰一碰登录**：两个公开接口（`/api/nfc-login` `/api/nfc-bind`），不要求 JWT（调用时用户未登录）。安全性由 device_id 校验（防错连 NAS）+ phone_id 硬件绑定 + 密码验证首次绑定三层保证。phone_id↔username 映射存在 LDAP `ou=nfc_bindings` 下，用 `organizationalRole` 对象类（cn=phone_id，roleOccupant=用户 DN），不需要额外数据库表。device_id 通过 `system.GetDeviceID()` 统一生成（读宿主机 `/host/etc/machine-id` → MD5 → 前12位 hex），mDNS、device-info 和 NFC 接口共用同一值。Docker 需挂载 `/etc/machine-id:/host/etc/machine-id:ro`。
 
 ## 目录结构
 
@@ -43,6 +44,8 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 | `authd/system/file.go` | 文件系统操作：ListDir、OpenFile、WriteFile、ValidatePath |
 | `authd/mdns/server.go` | mDNS 广播模块（grandcat/zeroconf），在物理接口和 P2P 接口上同时广播 _nas._tcp 服务 |
 | `authd/handler/device.go` | GET /api/device-info（设备校验，无需 JWT） |
+| `authd/handler/nfc.go` | NFC 碰一碰：登录（查 phone_id 绑定）/ 绑定（验密后写 LDAP） |
+| `authd/system/device.go` | GetDeviceID() — 统一设备标识生成（machine-id → MD5） |
 | `authd/docs/` | swag init 生成的 docs.go + swagger.json（编译进二进制） |
 | `deploy/` | Dockerfile、smb.conf、nginx-webdav.conf、start.sh、ldap.conf、nsswitch.conf |
 | `ldap/` | init.ldif（OU + 组初始化） |
@@ -62,7 +65,7 @@ NAS 多协议统一鉴权 Demo。验证 LDAP 作为唯一身份源，支持 HTTP
 
 | 分组 | 路由 | 认证 |
 |------|------|------|
-| 公开 | `/api/ping` `/api/device-info` `/api/register` `/api/login` | 无 |
+| 公开 | `/api/ping` `/api/device-info` `/api/register` `/api/login` `/api/nfc-login` `/api/nfc-bind` | 无 |
 | 认证 | `/api/validate-token` `/api/share/permission` `/api/share/permissions` | JWT |
 | 文件 | `/api/files` `/api/files/download` `/api/files/upload` `/api/files/mkdir` `/api/files/move` | JWT（角色自适应） |
 | 管理 | `/api/dashboard/*` `/api/users` `/api/users/count` `/api/users/:username` `/api/logs` `/api/proof/:id` `/api/proof/bundle` `/api/services` | JWT + admin |
