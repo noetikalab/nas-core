@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"nas/system"
+
 	"github.com/grandcat/zeroconf"
 )
 
@@ -15,14 +17,9 @@ import (
 // 这样 APP 在所有接口上都能通过 mDNS 发现 NAS。
 var servers []*zeroconf.Server
 
-// deviceID 返回 NAS 设备标识。
-// 优先使用 DEVICE_ID 环境变量，未设置时回退为 hostname。
+// deviceID 返回 NAS 设备标识，委托给 system.GetDeviceID()。
 func deviceID() string {
-	if id := os.Getenv("DEVICE_ID"); id != "" {
-		return id
-	}
-	h, _ := os.Hostname()
-	return h
+	return system.GetDeviceID()
 }
 
 // serviceName 返回 mDNS 服务实例的基础名称。

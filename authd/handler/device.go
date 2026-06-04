@@ -4,15 +4,13 @@ import (
 	"net/http"
 	"os"
 
+	"nas/system"
+
 	"github.com/gin-gonic/gin"
 )
 
 func getDeviceID() string {
-	if id := os.Getenv("DEVICE_ID"); id != "" {
-		return id
-	}
-	h, _ := os.Hostname()
-	return h
+	return system.GetDeviceID()
 }
 
 func getHostname() string {

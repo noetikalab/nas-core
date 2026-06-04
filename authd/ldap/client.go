@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf16"
 
@@ -204,6 +205,46 @@ func CountUsers(conn *ldap.Conn) (int, error) {
 func DeleteUser(conn *ldap.Conn, username string) error {
 	dn := fmt.Sprintf("uid=%s,%s", ldap.EscapeFilter(username), UsersDN)
 	return conn.Del(ldap.NewDelRequest(dn, nil))
+}
+
+// LookupPhoneID 在 ou=nfc_bindings 中查找 phone_id 绑定的用户名。
+// 返回用户名和是否找到。phone_id 属于十六进制字符串，无需特殊转义，
+// 但为安全起见仍使用 EscapeFilter。
+func LookupPhoneID(conn *ldap.Conn, phoneID string) (username string, found bool) {
+	res, err := conn.Search(ldap.NewSearchRequest(
+		"ou=nfc_bindings,dc=nas,dc=local",
+		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases,
+		0, 0, false,
+		fmt.Sprintf("(cn=%s)", ldap.EscapeFilter(phoneID)),
+		[]string{"roleOccupant"}, nil,
+	))
+	if err != nil || len(res.Entries) == 0 {
+		return "", false
+	}
+	// roleOccupant 格式：uid=alice,ou=users,dc=nas,dc=local
+	occupant := res.Entries[0].GetAttributeValue("roleOccupant")
+	if idx := strings.Index(occupant, "uid="); idx >= 0 {
+		rest := occupant[idx+4:]
+		if end := strings.IndexByte(rest, ','); end >= 0 {
+			return rest[:end], true
+		}
+		return rest, true // 无逗号兜底，如 uid=alice（不可能出现但防御编码）
+	}
+	return "", false
+}
+
+// BindPhoneID 在 LDAP 中创建 phone_id → username 绑定条目。
+// 使用 organizationalRole 对象类：cn=phone_id, roleOccupant=用户 DN。
+// 如果手机已绑定过（重复绑定），会返回 LDAP entry already exists 错误。
+func BindPhoneID(conn *ldap.Conn, phoneID, username string) error {
+	add := ldap.NewAddRequest(
+		fmt.Sprintf("cn=%s,ou=nfc_bindings,dc=nas,dc=local", phoneID),
+		nil,
+	)
+	add.Attribute("objectClass", []string{"organizationalRole"})
+	add.Attribute("cn", []string{phoneID})
+	add.Attribute("roleOccupant", []string{fmt.Sprintf("uid=%s,%s", username, UsersDN)})
+	return conn.Add(add)
 }
 
 // ssha 使用随机盐值计算 SSHA 密码哈希。

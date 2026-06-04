@@ -113,6 +113,8 @@ func main() {
 	pub.GET("/device-info", handler.DeviceInfo)
 	pub.POST("/register", handler.Register)
 	pub.POST("/login", handler.Login)
+	pub.POST("/nfc-login", handler.NfcLogin)
+	pub.POST("/nfc-bind", handler.NfcBind)
 
 	// --- 认证 API（需要 JWT，路径范围根据角色自适应） ---
 	api := r.Group("/api", jwtMiddleware())

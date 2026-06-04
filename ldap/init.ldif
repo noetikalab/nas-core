@@ -10,3 +10,7 @@ dn: cn=nas-users,ou=groups,dc=nas,dc=local
 objectClass: posixGroup
 cn: nas-users
 gidNumber: 1000
+
+dn: ou=nfc_bindings,dc=nas,dc=local
+objectClass: organizationalUnit
+ou: nfc_bindings

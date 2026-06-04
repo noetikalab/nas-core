@@ -43,6 +43,7 @@ services:
       JWT_SECRET: "nas-demo-secret-key-32bytes-long!"
     volumes:
       - nas-data:/data
+      - /etc/machine-id:/host/etc/machine-id:ro
 
 volumes:
   ldap-data:

@@ -244,3 +244,37 @@ type ProofDetailResponse struct {
 	Operation   CertifiedOperation `json:"operation"`
 	ProofRecord ProofRecordResponse `json:"proof_record"`
 }
+
+// --- NFC 碰一碰登录/绑定 ---
+
+// NfcLoginRequest NFC 碰一碰登录请求。
+// phone_id 由 APP 在首次启动时生成，永久不变，与手机硬件绑定。
+type NfcLoginRequest struct {
+	DeviceID string `json:"device_id" binding:"required" example:"b827eb3a1c2d"`
+	PhoneID  string `json:"phone_id" binding:"required" example:"9774d56d682e549c"`
+}
+
+// NfcLoginResponse NFC 登录响应。
+// 如果 phone_id 已绑定则返回 JWT，未绑定则 need_bind=true 引导 APP 跳转绑定页。
+type NfcLoginResponse struct {
+	Token    string `json:"token,omitempty" example:"eyJhbGci..."`
+	Username string `json:"username,omitempty" example:"alice"`
+	Role     string `json:"role,omitempty" example:"user"`
+	NeedBind bool   `json:"need_bind,omitempty" example:"true"`
+}
+
+// NfcBindRequest NFC 首次绑定请求。
+// 需要用户名密码验证，绑定后后续 NFC 碰一碰即可免密登录。
+type NfcBindRequest struct {
+	DeviceID string `json:"device_id" binding:"required" example:"b827eb3a1c2d"`
+	PhoneID  string `json:"phone_id" binding:"required" example:"9774d56d682e549c"`
+	Username string `json:"username" binding:"required" example:"alice"`
+	Password string `json:"password" binding:"required,min=8" example:"12345678"`
+}
+
+// NfcBindResponse NFC 绑定成功响应，同时签发 JWT。
+type NfcBindResponse struct {
+	Token    string `json:"token" example:"eyJhbGci..."`
+	Username string `json:"username" example:"alice"`
+	Role     string `json:"role" example:"user"`
+}
