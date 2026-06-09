@@ -99,13 +99,13 @@ sudo docker compose up -d
 sudo docker compose down -v && sudo docker compose up --build -d
 
 # 查看 LDAP 用户
-sudo docker exec ldap-demo-openldap-1 ldapsearch \
+sudo docker exec openldap ldapsearch \
   -x -H ldap://localhost \
   -D "cn=admin,dc=nas,dc=local" -w admin123 \
   -b "ou=users,dc=nas,dc=local"
 
 # 查看 Samba 用户
-sudo docker exec ldap-demo-nas-1 pdbedit -L
+sudo docker exec nas-core pdbedit -L
 
 # 查看 authd 日志
 sudo docker compose logs nas -f
