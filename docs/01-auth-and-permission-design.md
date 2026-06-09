@@ -210,3 +210,7 @@ JWT 结构：三段 Base64URL 编码，`.` 分隔：Header / Payload / Signature
 | SMB 与 POSIX ACL 映射 | Samba 某些配置下优先检查 Unix 权限位，授权时需配合 `chmod g+x` |
 | NFS 无用户级认证 | 依赖 UID 一致性，生产需 Kerberos |
 | WebDAV 需主动读 ACL | 每次请求调 `getfacl` 或缓存结果 |
+
+## 相关文章
+- [[../../wiki/PUF接入与SDK扩展方案]] — PUF 增强认证依赖本设计
+- [[03-permission-acl-analysis]] — 认证→权限的延伸

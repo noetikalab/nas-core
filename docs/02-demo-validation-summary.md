@@ -65,3 +65,6 @@ Docker Compose，三容器：OpenLDAP、ldap-init（一次性初始化）、nas�
 ## 遗留问题
 
 1. **ACL 只读共享对 SMB 的注意事项**：授权时需同时执行 `chmod g+x`，见文档03
+
+## 相关文章
+- [[01-auth-and-permission-design]] — 本验证的被测对象

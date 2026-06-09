@@ -62,3 +62,7 @@ setfacl -m user:<user>:<perm> <目录>    # 精细权限控制
 ```
 
 这样三个协议的行为趋于一致，POSIX ACL 是唯一的权限数据源。
+
+## 相关文章
+- [[../../wiki/PUF接入与SDK扩展方案]] — 权限系统是 PUF 安全模型的基础
+- [[01-auth-and-permission-design]] — 权限依赖的认证体系
