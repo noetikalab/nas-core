@@ -30,6 +30,7 @@ services:
   # 容器3：NAS 主容器，Go 服务 + Samba + NFS 合并在一起
   nas:
     container_name: nas-core
+    image: nas-core:latest
     build:
       context: .
       dockerfile: deploy/Dockerfile

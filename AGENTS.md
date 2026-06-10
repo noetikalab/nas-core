@@ -162,6 +162,14 @@ sudo docker compose logs nas -f
 2. `handler/file.go` — `hasACLWrite` 改为先用 LDAP 查 UID，再用 `user:{uid}:rwx` 匹配 `getfacl` 输出
 3. 所有 `exec.Command().Run()` → `CombinedOutput()`，失败时记录日志
 
+### mDNS wlx 接口名未被白名单识别（已解决 ✅）
+
+**现象**：mDNS 服务启动正常，但 APP 端发现不到 NAS 设备（返回 0 设备），`pickIPs()` 没有在任何接口上注册服务。
+
+**根因**：`isPhysicalOrP2P()` 函数白名单只允许 `wlp`/`wlan`/`eth`/`enp`/`p2p-` 前缀的接口名。USB WiFi 网卡按 MAC 地址命名的 `wlx` 开头的接口被过滤。
+
+**修复**：在 `isPhysicalOrP2P()` 白名单中增加 `wlx` 前缀。
+
 ## 约束
 
 - **Go 版本**：Dockerfile 固定 `golang:1.25`（依赖要求 go >= 1.25）
@@ -192,6 +200,5 @@ LDAP AddUser → useradd → CreateDataDir
 | 全局 | ../wiki/index.md | 全局知识目录（唯一检索入口） |
 | 全局 | ../wiki/协议层.md | 知识库协议——模板、标签、时效规则 |
 | 全局 | ../wiki/API契约.md | 跨服务接口契约 |
-| 本仓库 | docs/index.md | 本仓库本地知识目录 |
 | 本仓库 | docs/index.md | 本仓库本地知识目录 |
 | 本仓库 | docs/architecture.md | 本仓库架构设计与模块流程 |
